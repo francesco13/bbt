@@ -1,4 +1,4 @@
 # BBT
-Blockchain Training Support Material
+Blockchain training support material
 
 Jupiter notebooks to assist teachings around blockchain.
