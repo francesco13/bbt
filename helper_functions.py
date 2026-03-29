@@ -259,7 +259,7 @@ def sign(payload, private_key_hex):
 
 def sign_message(message: str, private_key_hex: str) -> dict:
     private_key = keys.PrivateKey(bytes.fromhex(private_key_hex.removeprefix("0x")))
-    msg_hash = keccak256(message.encode("utf-8"))
+    msg_hash = _keccak256(message.encode("utf-8"))
     signature = private_key.sign_msg_hash(msg_hash)
 
     return {
@@ -272,7 +272,7 @@ def sign_message(message: str, private_key_hex: str) -> dict:
 
 
 def verify_signature(message: str, signature_hex: str) -> bool:
-    msg_hash = keccak256(message.encode("utf-8"))
+    msg_hash = _keccak256(message.encode("utf-8"))
     signature = keys.Signature(bytes.fromhex(signature_hex.removeprefix("0x")))
     recovered_key = signature.recover_public_key_from_msg_hash(msg_hash)
     return recovered_key
