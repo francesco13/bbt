@@ -19,7 +19,7 @@ from Crypto.Util.number import isPrime
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
-from bitcoinaddress import Wallet
+#from bitcoinaddress import Wallet
 
 logger = logging.getLogger(__name__)
 
@@ -279,29 +279,52 @@ def display_qr(data: str):
     img = qrcode.make(data, image_factory=factory)
     display(SVG(img.to_string()))
 
+def xy64_to_sec_keys(raw_xy_hex: str, ):
+    """
+    Convert a 64-byte raw X||Y public key (128 hex chars) into:
+      - compressed SEC public key
+      - uncompressed SEC public key
+
+    Returns: (compressed_hex, uncompressed_hex)
+    """
+    h = raw_xy_hex.lower().strip()
+    if h.startswith("0x"):
+        h = h[2:]
+
+    if len(h) != 128:
+        raise ValueError("expected 64 bytes of raw X/Y coordinates (128 hex chars)")
+
+    x_hex = h[:64]
+    y_hex = h[64:]
+
+    y = int(y_hex, 16)
+    prefix = "02" if y % 2 == 0 else "03"
+
+    compressed = prefix + x_hex
+    uncompressed = "04" + x_hex + y_hex
+    return compressed, uncompressed
+
 def ec_key_from_decimal(decimal_number: int):
     private_key_hex = hex(decimal_number)[2:].zfill(64)
     private_key = keys.PrivateKey(bytes.fromhex(private_key_hex))
     public_key = private_key.public_key
-    public_key_hex = public_key.to_hex()              
-    public_key_uncompressed = "0x04" + public_key_hex.removeprefix("0x")
-
+    public_key_compressed, public_key_uncompressed = xy64_to_sec_keys(public_key.to_hex())
+    
     # Derive Ethereum address
     ethereum_address = public_key.to_checksum_address()
-    a=Wallet(private_key_hex)
 
-        
+    # Derive P2TR bitcoin address
+    Bitcoin_bc1_P2TR = p2tr_address_from_pubkey(public_key_compressed, testnet=False)
+    Bitcoin_tb1_P2TR = p2tr_address_from_pubkey(public_key_compressed, testnet=True)
+    
     return {
         "decimal": decimal_number,
         "private_key_hex": "0x" + private_key_hex,
-        "public_key_hex": public_key_hex,
+        "public_key_compressed": public_key_compressed,
         "public_key_uncompressed": public_key_uncompressed,
-        "public_key_compressed": public_key_hex,
         "ethereum_address": ethereum_address,
-        "Bitcoin address P2PKH": a.address.mainnet.pubaddr1,
-        "Bitcoin bc1_P2WPKH": a.address.mainnet.pubaddrbc1_P2WPKH,
-        "Bitcoin bc1_P2WSH": a.address.mainnet.pubaddrbc1_P2WSH,
-        "Bitcoin testnet tb1_P2WSH": a.address.testnet.pubaddrtb1_P2WSH,
+        "bitcoin_bc1_P2TR": Bitcoin_bc1_P2TR,
+        "bitcoin_tb1_P2TR": Bitcoin_tb1_P2TR,        
     }
 ###
 def _seed_to_bytes(seed: int) -> bytes:
@@ -360,6 +383,106 @@ def _extended_gcd(a: int, b: int) -> tuple[int, int, int]:
     g, x, y = _extended_gcd(b % a, a)
     return g, y - (b // a) * x, x
 
+import hashlib
+
+def p2tr_address_from_pubkey(pubkey_hex, testnet=False):
+    P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+    N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+    G = (
+        55066263022277343669578718895168534326250603453777594175500187360389116729240,
+        32670510020758816978083085130507043184471273380659243275938904335757337482424,
+    )
+    CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+    BECH32M_CONST = 0x2BC830A3
+
+    def inv(a): return pow(a, -1, P)
+
+    def add(A, B):
+        if A is None: return B
+        if B is None: return A
+        x1, y1 = A
+        x2, y2 = B
+        if x1 == x2 and (y1 + y2) % P == 0:
+            return None
+        if A == B:
+            m = (3 * x1 * x1) * inv((2 * y1) % P) % P
+        else:
+            m = (y2 - y1) * inv((x2 - x1) % P) % P
+        x3 = (m * m - x1 - x2) % P
+        y3 = (m * (x1 - x3) - y1) % P
+        return (x3, y3)
+
+    def mul(k, A):
+        R = None
+        while k:
+            if k & 1:
+                R = add(R, A)
+            A = add(A, A)
+            k >>= 1
+        return R
+
+    def tagged_hash(tag, msg):
+        t = hashlib.sha256(tag.encode()).digest()
+        return hashlib.sha256(t + t + msg).digest()
+
+    def decode_pubkey(sec):
+        sec = bytes.fromhex(sec)
+        if len(sec) != 33 or sec[0] not in (2, 3):
+            raise ValueError("expected compressed public key hex")
+        x = int.from_bytes(sec[1:], "big")
+        y = pow((pow(x, 3, P) + 7) % P, (P + 1) // 4, P)
+        if (y & 1) != (sec[0] & 1):
+            y = P - y
+        return (x, y)
+
+    def polymod(vals):
+        g = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3]
+        chk = 1
+        for v in vals:
+            b = chk >> 25
+            chk = ((chk & 0x1FFFFFF) << 5) ^ v
+            for i in range(5):
+                if (b >> i) & 1:
+                    chk ^= g[i]
+        return chk
+
+    def hrp_expand(hrp):
+        return [ord(c) >> 5 for c in hrp] + [0] + [ord(c) & 31 for c in hrp]
+
+    def convertbits(data, frombits, tobits):
+        acc = bits = 0
+        out = []
+        maxv = (1 << tobits) - 1
+        for b in data:
+            acc = (acc << frombits) | b
+            bits += frombits
+            while bits >= tobits:
+                bits -= tobits
+                out.append((acc >> bits) & maxv)
+        if bits:
+            out.append((acc << (tobits - bits)) & maxv)
+        return out
+
+    def bech32m_encode(hrp, data):
+        vals = hrp_expand(hrp) + data
+        pm = polymod(vals + [0, 0, 0, 0, 0, 0]) ^ BECH32M_CONST
+        checksum = [(pm >> 5 * (5 - i)) & 31 for i in range(6)]
+        return hrp + "1" + "".join(CHARSET[d] for d in data + checksum)
+
+    P_int = decode_pubkey(pubkey_hex)
+    if P_int[1] & 1:
+        P_int = (P_int[0], P - P_int[1])  # x-only internal key must have even y
+
+    xonly = P_int[0].to_bytes(32, "big")
+    tweak = int.from_bytes(tagged_hash("TapTweak", xonly), "big") % N
+    Q = add(P_int, mul(tweak, G))
+    if Q is None:
+        raise ValueError("invalid tweaked key")
+
+    witness_program = Q[0].to_bytes(32, "big")
+    return bech32m_encode("tb" if testnet else "bc", [1] + convertbits(witness_program, 8, 5))
+
+    
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -496,5 +619,6 @@ def decrypt(token: str, private_key: RSA.RsaKey) -> str:
     plaintext = plaintext_bytes.decode("utf-8")
     logger.debug("decrypt: %d B ciphertext → %d B plaintext", len(ciphertext), len(plaintext))
     return plaintext
+
 
 
