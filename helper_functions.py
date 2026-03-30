@@ -1,6 +1,7 @@
 #%pip install eth_keys
 #%pip install qrcode
 #%pip install pycryptodome
+#%pip install bitcoinaddress 
 from __future__ import annotations
 
 import qrcode
@@ -18,6 +19,7 @@ from Crypto.Util.number import isPrime
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.PublicKey import RSA
 from Crypto.Random import get_random_bytes
+from bitcoinaddress import Wallet
 
 logger = logging.getLogger(__name__)
 
@@ -262,13 +264,7 @@ def sign_message(message: str, private_key_hex: str) -> dict:
     msg_hash = _keccak256(message.encode("utf-8"))
     signature = private_key.sign_msg_hash(msg_hash)
 
-    return {
-        "message_hash": "0x" + msg_hash.hex(),
-        "signature":    "0x" + signature.to_bytes().hex(),
-        "r": hex(signature.r),
-        "s": hex(signature.s),
-        "v": signature.v,
-    }
+    return signature.to_bytes().hex()
 
 
 def verify_signature(message: str, signature_hex: str) -> bool:
@@ -292,7 +288,9 @@ def ec_key_from_decimal(decimal_number: int):
 
     # Derive Ethereum address
     ethereum_address = public_key.to_checksum_address()
+    a=Wallet(private_key_hex)
 
+        
     return {
         "decimal": decimal_number,
         "private_key_hex": "0x" + private_key_hex,
@@ -300,6 +298,10 @@ def ec_key_from_decimal(decimal_number: int):
         "public_key_uncompressed": public_key_uncompressed,
         "public_key_compressed": public_key_hex,
         "ethereum_address": ethereum_address,
+        "Bitcoin address P2PKH": a.address.mainnet.pubaddr1,
+        "Bitcoin bc1_P2WPKH": a.address.mainnet.pubaddrbc1_P2WPKH,
+        "Bitcoin bc1_P2WSH": a.address.mainnet.pubaddrbc1_P2WSH,
+        "Bitcoin testnet tb1_P2WSH": a.address.testnet.pubaddrtb1_P2WSH,
     }
 ###
 def _seed_to_bytes(seed: int) -> bytes:
